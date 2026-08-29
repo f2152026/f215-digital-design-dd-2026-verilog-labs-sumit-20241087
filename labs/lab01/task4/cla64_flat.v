@@ -1,6 +1,6 @@
 // cla64_flat.v
-// 64-bit flat, unblocked carry-lookahead adder.
-// Every carry is computed directly from p/g and cin.
+// 64-bit flat / unblocked carry-lookahead adder.
+// Every carry is calculated directly from p, g and cin.
 // No carry depends on a previous carry.
 
 module cla64_flat(
@@ -11,24 +11,15 @@ module cla64_flat(
   output        cout
 );
 
-  wire [63:0] p, g;
+  wire [63:0] p;
+  wire [63:0] g;
 
-  // c[1] through c[64]
+  // c[1] ... c[64]
   wire [64:1] c;
 
-  // Each carry has up to 65 direct product terms:
-  //
-  // c[k] =
-  //   g[k-1]
-  //   | p[k-1]g[k-2]
-  //   | p[k-1]p[k-2]g[k-3]
-  //   | ...
-  //   | p[k-1]...p[0]cin
-  //
-  // terms[k][0]     = g[k-1]
-  // terms[k][j]     = p[k-1]...p[j] g[j-1]
-  // terms[k][k]     = p[k-1]...p[0] cin
-  wire [64:0] terms [1:64];
+  // Each row contains the direct product terms for one carry.
+  // Using [0:63] avoids the problematic carry_terms[64] index.
+  wire [64:0] carry_terms [0:63];
 
   // ------------------------------------------------------------
   // Step 1: propagate and generate
@@ -45,57 +36,82 @@ module cla64_flat(
 
   // ------------------------------------------------------------
   // Step 2: direct carry-lookahead equations
+  //
+  // For carry c[k]:
+  //
+  // c[k] =
+  //     g[k-1]
+  //   | p[k-1]g[k-2]
+  //   | p[k-1]p[k-2]g[k-3]
+  //   | ...
+  //   | p[k-1]...p[0]cin
+  //
+  // No c[k] uses c[k-1].
   // ------------------------------------------------------------
 
-  genvar k, j;
+  genvar k;
+  genvar j;
 
   generate
-
-    // Generate all 64 carries.
     for (k = 1; k <= 64; k = k + 1) begin : gen_carries
 
-      // g[k-1]
-      assign #(2) terms[k][0] = g[k-1];
+      for (j = 0; j <= 64; j = j + 1) begin : gen_terms
 
-      // p[k-1]...p[j] g[j-1]
-      for (j = 1; j < 64; j = j + 1) begin : gen_g_terms
+        // First term: g[k-1]
+        if (j == 0) begin : first_term
 
-        if (j < k) begin : active_g_term
-          assign #(2) terms[k][j] =
+          assign #(2) carry_terms[k-1][j] = g[k-1];
+
+        end
+
+        // Middle terms:
+        //
+        // j = 1:
+        //   p[k-1] & g[k-2]
+        //
+        // j = 2:
+        //   p[k-1] & p[k-2] & g[k-3]
+        //
+        // etc.
+        else if (j < k) begin : generate_term
+
+          assign #(2) carry_terms[k-1][j] =
               (&p[k-1:j]) & g[j-1];
+
         end
-        else begin : inactive_g_term
-          assign #(2) terms[k][j] = 1'b0;
+
+        // Final cin term:
+        //
+        // p[k-1] & p[k-2] & ... & p[0] & cin
+        else if (j == k) begin : cin_term
+
+          assign #(2) carry_terms[k-1][j] =
+              (&p[k-1:0]) & cin;
+
+        end
+
+        // Everything beyond the required terms is zero.
+        else begin : unused_term
+
+          assign #(2) carry_terms[k-1][j] = 1'b0;
+
         end
 
       end
 
-      // p[k-1]...p[0] cin
-      assign #(2) terms[k][k] =
-          (&p[k-1:0]) & cin;
-
-      // Unused terms are zero.
-      for (j = 1; j < 64; j = j + 1) begin : gen_unused
-        if (j > k) begin : zero_unused
-          assign #(2) terms[k][j] = 1'b0;
-        end
-      end
-
-      // OR all direct terms to produce c[k].
-      assign #(2) c[k] = |terms[k];
+      // OR all direct terms together.
+      assign #(2) c[k] = |carry_terms[k-1];
 
     end
-
   endgenerate
 
   // ------------------------------------------------------------
   // Step 3: sum
-  // c[1] corresponds to bit 1 carry,
-  // so bit 0 uses cin.
   // ------------------------------------------------------------
 
   assign #(2) sum = p ^ {c[63:1], cin};
 
+  // Final carry
   assign #(2) cout = c[64];
 
 endmodule
